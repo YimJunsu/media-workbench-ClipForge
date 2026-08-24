@@ -1,0 +1,32 @@
+# Netlify build settings.
+#
+# This file wins over whatever is set in the Netlify UI, so the deploy is
+# reproducible from the repo alone.
+
+[build]
+  # vite.config.ts sends the site to dist/public, NOT dist. dist/index.js is the
+  # bundled Express server used by `pnpm start` locally; Netlify never runs it,
+  # so the web build is all we ask for here.
+  command = "npm run build:web"
+  publish = "dist/public"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# The app routes on the client (wouter). Without this, refreshing or opening
+# any path other than / would 404 because there is no file at that path.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    # Vite fingerprints these filenames, so they can be cached hard.
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
