@@ -44,14 +44,23 @@ import {
 
 const WAVE_HEAD = 168;
 
-type Props = { editor: Editor; onPickAudio: () => void };
+type Props = {
+  editor: Editor;
+  /** A ticking zoom request from the keyboard, handled in an effect. */
+  zoomNudge?: { tick: number; way: -1 | 0 | 1 };
+  onPickAudio: () => void;
+};
 type Drag = {
   clip: Clip;
   mode: "move" | "trim-start" | "trim-end";
   originX: number;
 };
 
-export default function AudioWorkspace({ editor, onPickAudio }: Props) {
+export default function AudioWorkspace({
+  editor,
+  zoomNudge,
+  onPickAudio,
+}: Props) {
   const {
     project,
     time,
@@ -60,8 +69,11 @@ export default function AudioWorkspace({ editor, onPickAudio }: Props) {
     seek,
     duration,
     selected,
-    selectedId,
+    selectedIds,
     setSelectedId,
+    toggleSelectId,
+    removeClips,
+    rippleDelete,
     patchClip,
     patchTrack,
     removeClip,
@@ -100,6 +112,15 @@ export default function AudioWorkspace({ editor, onPickAudio }: Props) {
   const width = span * zoom;
 
   useEffect(() => () => stopMeterRef.current(), []);
+
+  useEffect(() => {
+    if (!zoomNudge?.tick) return;
+    if (zoomNudge.way === 1) setZoom(value => Math.min(400, value * 1.5));
+    else if (zoomNudge.way === -1) setZoom(value => Math.max(10, value / 1.5));
+    else setZoom(duration > 0 ? Math.max(10, 880 / (duration + 4)) : 64);
+    // Only the tick matters; the same direction twice must still fire.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomNudge?.tick]);
 
   useEffect(() => {
     if (!drag) return;
@@ -266,10 +287,23 @@ export default function AudioWorkspace({ editor, onPickAudio }: Props) {
           </button>
           <button
             className="mini"
-            onClick={() => selected && removeClip(selected.id)}
-            disabled={!isAudioClip}
+            onClick={() => removeClips(selectedIds)}
+            disabled={selectedIds.length === 0}
+            title="Delete"
           >
             <Trash2 size={13} /> 삭제
+            {selectedIds.length > 1 && <em> {selectedIds.length}</em>}
+          </button>
+          <button
+            className="mini"
+            onClick={() => {
+              const gone = rippleDelete(selectedIds);
+              if (gone > 0) toast.success(`${gone}개를 지우고 뒤를 당겼습니다.`);
+            }}
+            disabled={selectedIds.length === 0}
+            title="Shift+Delete — 지운 자리를 남기지 않습니다"
+          >
+            <Trash2 size={13} /> 지우고 당기기
           </button>
           <i className="bar-split" />
           <button
@@ -377,11 +411,17 @@ export default function AudioWorkspace({ editor, onPickAudio }: Props) {
                       clip={clip}
                       zoom={zoom}
                       editor={editor}
-                      selected={clip.id === selectedId}
+                      selected={selectedIds.includes(clip.id)}
                       onDrag={(event, mode) => {
                         if (track.locked) return;
                         event.stopPropagation();
                         event.preventDefault();
+                        // Ctrl/Shift picks without dragging, same as the
+                        // video timeline, so Delete can take several at once.
+                        if (event.ctrlKey || event.metaKey || event.shiftKey) {
+                          toggleSelectId(clip.id);
+                          return;
+                        }
                         setSelectedId(clip.id);
                         setDrag({ clip, mode, originX: event.clientX });
                       }}

@@ -807,6 +807,15 @@ input[type="range"] {
   gap: 3px;
   padding: 0 10px;
   border-bottom: 1px solid var(--line);
+  /* There are more tools than fit a narrow window. They scroll sideways
+     rather than squeezing every label down to one letter per line. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.timeline-bar > *,
+.wave-bar > * {
+  flex: 0 0 auto;
 }
 .timeline-bar button,
 .wave-bar .mini {
@@ -818,6 +827,7 @@ input[type="range"] {
   border-radius: 5px;
   color: var(--dim);
   font-size: 11.5px;
+  white-space: nowrap;
 }
 .timeline-bar button:not(:disabled):hover,
 .wave-bar .mini:not(:disabled):hover {
@@ -841,6 +851,12 @@ input[type="range"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The hint is the first thing to go when the tools need the room. */
+@media (max-width: 1180px) {
+  .bar-hint {
+    display: none;
+  }
 }
 
 /* One scroller for the whole timeline. The ruler sticks to the top and the
@@ -1681,4 +1697,211 @@ input[type="range"] {
   border-left: 3px solid transparent;
   border-right: 3px solid transparent;
   border-top: 5px solid #6fd3c4;
+}
+
+/* ---------------------------------------------------- selection and beats */
+
+/* Beat marks drawn down through every lane, so a cut can be read against the
+   music without hunting up at the ruler. */
+.beat-grid {
+  position: absolute;
+  top: 28px;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.beat-grid i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(111, 211, 196, 0.16);
+}
+
+.sweep-box {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  border: 1px solid var(--amber);
+  background: var(--amber-soft);
+  border-radius: 2px;
+}
+
+.clip.is-selected {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 0 0 1px rgba(232, 149, 46, 0.35);
+}
+.clip-badge.is-beat {
+  right: auto;
+  left: 6px;
+  background: rgba(232, 149, 46, 0.85);
+  color: #1d1403;
+  font-weight: 600;
+}
+
+/* Count badge on a toolbar button when several clips are picked. */
+.timeline-bar button em,
+.wave-bar .mini em {
+  font-style: normal;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--amber);
+  color: #1d1403;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.bar-bpm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #100f0d;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  color: var(--amber-hi);
+  white-space: nowrap;
+}
+.bar-bpm button {
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 9.5px;
+}
+.bar-bpm button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------- media browser tile */
+
+.asset-tile {
+  cursor: pointer;
+  border-radius: 6px;
+  outline-offset: 2px;
+}
+.asset-tile:focus-visible {
+  outline: 2px solid var(--amber);
+}
+.asset-art {
+  position: relative;
+}
+.asset-drop {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+.asset-tile:hover .asset-drop,
+.asset-tile:focus-within .asset-drop {
+  opacity: 1;
+}
+.asset-drop:hover {
+  background: var(--rec);
+}
+
+/* --------------------------------------------------------- beat caption box */
+
+.beat-caption {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #100f0d;
+  display: grid;
+  gap: 7px;
+}
+.beat-caption-foot {
+  display: grid;
+  gap: 6px;
+}
+.beat-caption-foot small {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.panel-warn {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(226, 84, 63, 0.34);
+  border-radius: 6px;
+  background: rgba(226, 84, 63, 0.1);
+  font-size: 11px;
+  line-height: 1.5;
+  color: #f0b3a8;
+}
+
+/* ------------------------------------------------------------- shortcut help */
+
+.keys-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--dim);
+}
+.keys-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.keys-dialog {
+  max-width: 900px;
+}
+.keys-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 18px 22px;
+  margin-top: 6px;
+}
+.keys-grid h3 {
+  margin: 0 0 7px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.keys-grid dl {
+  margin: 0;
+  display: grid;
+  gap: 5px;
+}
+.keys-grid dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 132px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+.keys-grid dt {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  color: var(--amber-hi);
+}
+.keys-grid dd {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+@media (max-width: 900px) {
+  .keys-grid {
+    grid-template-columns: 1fr;
+  }
 }

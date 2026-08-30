@@ -35,6 +35,89 @@ export const CAPTION_ANIMS: { id: CaptionAnim; name: string }[] = [
 ];
 export type CaptionFont = "sans" | "impact" | "serif" | "hand" | "mono";
 
+/**
+ * How a caption answers the music. `beat` fires on every marker on the
+ * timeline; `level` follows how loud the sound actually is right now.
+ */
+export type BeatReact =
+  | "none"
+  | "pop"
+  | "bounce"
+  | "shake"
+  | "glow"
+  | "flash"
+  | "wobble"
+  | "jitter";
+
+export const BEAT_REACTS: { id: BeatReact; name: string; hint: string }[] = [
+  { id: "none", name: "없음", hint: "가만히 있습니다" },
+  { id: "pop", name: "팝", hint: "비트마다 커졌다 돌아옵니다" },
+  { id: "bounce", name: "바운스", hint: "비트마다 위로 튑니다" },
+  { id: "shake", name: "흔들기", hint: "비트마다 좌우로 떨립니다" },
+  { id: "glow", name: "글로우", hint: "비트마다 빛이 번집니다" },
+  { id: "flash", name: "컬러 플래시", hint: "비트마다 글자색이 바뀝니다" },
+  { id: "wobble", name: "기울임", hint: "비트마다 좌우로 기웁니다" },
+  { id: "jitter", name: "지터", hint: "비트마다 사방으로 튀어 오릅니다" },
+];
+
+export type BeatDrive = "beat" | "level";
+
+export type BeatStyle = {
+  react: BeatReact;
+  drive: BeatDrive;
+  /** 0..1 — how far the effect travels at full strength. */
+  amount: number;
+  /** Seconds a single hit takes to fall back to rest. */
+  decay: number;
+  /** Colour used by flash and glow. */
+  color: string;
+};
+
+export const defaultBeat = (): BeatStyle => ({
+  react: "none",
+  drive: "beat",
+  amount: 0.55,
+  decay: 0.26,
+  color: "#e8952e",
+});
+
+/** On-screen waveform. Lives on a text track clip, drawn under the captions. */
+export type VizKind = "bars" | "wave" | "mirror" | "circle";
+
+export const VIZ_KINDS: { id: VizKind; name: string }[] = [
+  { id: "bars", name: "막대" },
+  { id: "mirror", name: "위아래 막대" },
+  { id: "wave", name: "물결선" },
+  { id: "circle", name: "원형" },
+];
+
+export type VizStyle = {
+  kind: VizKind;
+  color: string;
+  opacity: number;
+  /** Centre of the visualiser, 0..1 of the frame. */
+  x: number;
+  y: number;
+  /** Box size as a fraction of the frame. */
+  width: number;
+  height: number;
+  bars: number;
+  /** Follow one audio clip only; empty means everything audible. */
+  source: string;
+};
+
+export const defaultViz = (): VizStyle => ({
+  kind: "bars",
+  color: "#e8952e",
+  opacity: 0.85,
+  x: 0.5,
+  y: 0.78,
+  width: 0.8,
+  height: 0.22,
+  bars: 48,
+  source: "",
+});
+
 export const FONTS: { id: CaptionFont; name: string; stack: string }[] = [
   {
     id: "sans",
@@ -78,6 +161,11 @@ export type TextStyle = {
   /** Letter spacing as a fraction of the font size. */
   letterSpacing: number;
   anim: CaptionAnim;
+  /** How this caption moves with the music. */
+  beat: BeatStyle;
+  /** Light each word up in turn, timed to the beats under the clip. */
+  karaoke: boolean;
+  karaokeColor: string;
 };
 
 export type Transform = {
@@ -128,6 +216,8 @@ export type Clip = {
   trackId: string;
   assetId?: string;
   text?: TextStyle;
+  /** An on-screen waveform instead of words. Text tracks carry these too. */
+  viz?: VizStyle;
   /** In and out points inside the source, in source seconds. */
   start: number;
   end: number;
@@ -314,6 +404,9 @@ export const defaultText = (content: string): TextStyle => ({
   lineHeight: 1.28,
   letterSpacing: 0,
   anim: "none",
+  beat: defaultBeat(),
+  karaoke: false,
+  karaokeColor: "#ffd27a",
 });
 
 /** #rrggbb + alpha -> a canvas-ready colour. */
@@ -472,17 +565,23 @@ export function appendAt(project: Project, trackId: string) {
   );
 }
 
-/** Candidate magnet points: the playhead and every other clip edge. */
+/**
+ * Candidate magnet points: the playhead, every other clip edge, and — unless
+ * turned off — the beat marks, so a cut can land exactly on the drum.
+ */
 export function snapPoints(
   project: Project,
-  ignoreId: string,
-  playhead: number
+  ignore: string | string[],
+  playhead: number,
+  includeMarkers = true
 ) {
+  const skip = new Set(Array.isArray(ignore) ? ignore : [ignore]);
   const points = [0, playhead];
   for (const clip of project.clips) {
-    if (clip.id === ignoreId) continue;
+    if (skip.has(clip.id)) continue;
     points.push(clip.at, clipEnd(clip));
   }
+  if (includeMarkers) points.push(...project.markers);
   return points;
 }
 
@@ -716,11 +815,13 @@ export function findBeats(
     for (let j = i - window; j < i; j += 1) sum += peaks[j];
     const local = sum / window;
     const rising = peaks[i] > peaks[i - 1];
+    // A hit has to stand out from what came just before it, or be loud in its
+    // own right. The second half matters: on a sparse track the run-up to a
+    // beat is near silence, and a ratio test alone would throw every one away.
     if (
       rising &&
-      local > 0.01 &&
-      peaks[i] > local * sensitivity &&
-      peaks[i] > 0.12
+      peaks[i] > 0.12 &&
+      (peaks[i] > local * sensitivity || local < 0.02)
     ) {
       const at = i * perBucket;
       // Two beats closer than a 16th at 200bpm are the same hit.
@@ -740,6 +841,130 @@ export function peakAt(asset: Asset, sourceSeconds: number) {
     (sourceSeconds / asset.duration) * asset.peaks.length
   );
   return asset.peaks[Math.max(0, Math.min(asset.peaks.length - 1, index))] ?? 0;
+}
+
+// -------------------------------------------------------------- beat driving
+
+/**
+ * 0..1 that snaps to 1 on every marker and falls away before the next one.
+ * This is what makes a caption land ON the drum instead of near it.
+ */
+export function beatEnergy(markers: number[], time: number, decay = 0.26) {
+  if (markers.length === 0 || decay <= 0) return 0;
+  let last = -1;
+  // Markers are kept sorted, so the last one at or before `time` wins.
+  for (let i = 0; i < markers.length; i += 1) {
+    if (markers[i] > time + 0.0001) break;
+    last = markers[i];
+  }
+  if (last < 0) return 0;
+  const since = time - last;
+  if (since > decay) return 0;
+  // Fast attack, softer tail — the shape a percussive hit actually has.
+  const fall = 1 - since / decay;
+  return fall * fall;
+}
+
+/** How loud everything audible is right now, 0..1, read off the peak tables. */
+export function levelAt(project: Project, time: number) {
+  let loudest = 0;
+  for (const clip of project.clips) {
+    const track = trackOf(project, clip);
+    if (!track || track.kind === "text" || track.muted) continue;
+    if (!covers(clip, time)) continue;
+    const asset = assetOf(project, clip);
+    if (!asset || asset.peaks.length === 0) continue;
+    loudest = Math.max(
+      loudest,
+      peakAt(asset, sourceTime(clip, time)) * clip.volume
+    );
+  }
+  return Math.max(0, Math.min(1, loudest));
+}
+
+/** The 0..1 drive value a beat style asks for at this moment. */
+export function pulseAt(project: Project, beat: BeatStyle, time: number) {
+  if (!beat || beat.react === "none") return 0;
+  const raw =
+    beat.drive === "level"
+      ? levelAt(project, time)
+      : beatEnergy(project.markers, time, beat.decay);
+  return Math.max(0, Math.min(1, raw));
+}
+
+/**
+ * Tempo from the gaps between markers. The median gap is used rather than the
+ * mean because one missed onset would drag an average badly off.
+ */
+export function detectBpm(markers: number[]): number | null {
+  if (markers.length < 4) return null;
+  const gaps = [];
+  for (let i = 1; i < markers.length; i += 1) {
+    const gap = markers[i] - markers[i - 1];
+    if (gap > 0.18 && gap < 2) gaps.push(gap);
+  }
+  if (gaps.length < 3) return null;
+  gaps.sort((a, b) => a - b);
+  let beat = gaps[Math.floor(gaps.length / 2)];
+  // Fold into the range people actually count in.
+  while (beat < 0.3) beat *= 2;
+  while (beat > 1.2) beat /= 2;
+  return Math.round(60 / beat);
+}
+
+/** A steady click track: every beat from `offset` up to `span`. */
+export function beatGrid(bpm: number, offset: number, span: number) {
+  if (bpm <= 0 || span <= 0) return [];
+  const step = 60 / bpm;
+  const out: number[] = [];
+  for (let at = offset; at <= span; at += step) {
+    out.push(Number(at.toFixed(3)));
+    if (out.length > 4000) break;
+  }
+  return out;
+}
+
+/**
+ * A short window of the waveform around now, resampled to `count` bars. This is
+ * what the on-screen visualiser draws, so it moves with the actual sound.
+ */
+export function vizSamples(
+  project: Project,
+  time: number,
+  count: number,
+  sourceClipId = "",
+  window = 1.1
+): number[] {
+  let best: { clip: Clip; asset: Asset } | null = null;
+  let loudest = -1;
+  for (const clip of project.clips) {
+    if (sourceClipId && clip.id !== sourceClipId) continue;
+    const track = trackOf(project, clip);
+    if (!track || track.kind === "text" || track.muted) continue;
+    if (!covers(clip, time)) continue;
+    const asset = assetOf(project, clip);
+    if (!asset || asset.peaks.length === 0 || asset.duration <= 0) continue;
+    const level = peakAt(asset, sourceTime(clip, time)) * clip.volume;
+    if (level > loudest) {
+      loudest = level;
+      best = { clip, asset };
+    }
+  }
+  if (!best) return new Array(count).fill(0);
+
+  const { clip, asset } = best;
+  const centre = sourceTime(clip, time);
+  const perBucket = asset.duration / asset.peaks.length;
+  const half = window / 2;
+  const out: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const at = centre - half + (window * i) / Math.max(1, count - 1);
+    const index = Math.round(at / perBucket);
+    const peak =
+      index >= 0 && index < asset.peaks.length ? asset.peaks[index] : 0;
+    out.push(Math.max(0, Math.min(1, peak * clip.volume)));
+  }
+  return out;
 }
 
 export function kindOf(file: File): AssetKind | null {

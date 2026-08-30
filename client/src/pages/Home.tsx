@@ -6,11 +6,13 @@
  * timeline's audio track. The hidden media elements live here so switching
  * workspaces never interrupts playback or breaks the export audio graph.
  */
-import { useEffect, useRef, useState } from "react";
-import { Download, Film, Loader2, Music4, X } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import { Download, Film, Keyboard, Loader2, Music4, X } from "lucide-react";
 import { toast } from "sonner";
 import AudioWorkspace from "@/editor/AudioWorkspace";
+import ShortcutHelp from "@/editor/ShortcutHelp";
 import VideoWorkspace from "@/editor/VideoWorkspace";
+import { useShortcuts } from "@/editor/useShortcuts";
 import {
   formatTime,
   isSubtitleFile,
@@ -29,36 +31,39 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [exportRatio, setExportRatio] = useState<number | null>(null);
   const [exportNote, setExportNote] = useState("");
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [zoomNudge, setZoomNudge] = useState<{ tick: number; way: -1 | 0 | 1 }>({
+    tick: 0,
+    way: 0,
+  });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const visualInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
   const subtitleInput = useRef<HTMLInputElement>(null);
   const cancelRef = useRef({ cancelled: false });
 
-  const { project, duration, toggle, addFiles, importing, registerAudio } =
-    editor;
+  const { project, duration, addFiles, importing, registerAudio } = editor;
   // Every audio clip needs its own element so tracks can overlap and mix.
   const sounds = project.clips.filter(clip =>
     tracksOfKind(project, "audio").some(track => track.id === clip.trackId)
   );
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (["INPUT", "TEXTAREA"].includes(target.tagName)) return;
-      if (event.code === "Space") {
-        event.preventDefault();
-        toggle();
-      }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
-        event.preventDefault();
-        if (event.shiftKey) editor.redo();
-        else editor.undo();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggle, editor]);
+  // Zoom lives inside each workspace, so the key press is passed down as a
+  // ticking nudge rather than lifting the whole zoom state up here.
+  const onZoom = useCallback((way: -1 | 0 | 1) => {
+    setZoomNudge(current => ({ tick: current.tick + 1, way }));
+  }, []);
+
+  useShortcuts(editor, {
+    onZoom,
+    onToggleHelp: () => setHelpOpen(open => !open),
+    onFreeze: () => {
+      if (!editor.freezeFrame(canvasRef.current))
+        toast.error("재생 헤드를 영상 클립 위로 옮긴 뒤 눌러 주세요.");
+      else toast.success("정지 화면을 넣었습니다.");
+    },
+    onNotice: message => toast.message(message),
+  });
 
   /** .srt/.vtt files become caption clips; everything else goes to the library. */
   const takeSubtitles = async (files: File[]) => {
@@ -236,6 +241,14 @@ export default function Home() {
           )}
           <span className="project-time">{formatTime(duration)}</span>
           <button
+            className="keys-button"
+            onClick={() => setHelpOpen(true)}
+            title="단축키 (?)"
+            aria-label="단축키 보기"
+          >
+            <Keyboard size={15} />
+          </button>
+          <button
             className="export-button"
             onClick={runExport}
             disabled={duration <= 0 || exportRatio !== null}
@@ -249,6 +262,7 @@ export default function Home() {
         <VideoWorkspace
           editor={editor}
           canvasRef={canvasRef}
+          zoomNudge={zoomNudge}
           onPickVisual={() => visualInput.current?.click()}
           onPickAudio={() => audioInput.current?.click()}
           onPickSubtitles={() => subtitleInput.current?.click()}
@@ -256,9 +270,12 @@ export default function Home() {
       ) : (
         <AudioWorkspace
           editor={editor}
+          zoomNudge={zoomNudge}
           onPickAudio={() => audioInput.current?.click()}
         />
       )}
+
+      <ShortcutHelp open={helpOpen} onOpenChange={setHelpOpen} />
 
       {/* Hidden transports. They outlive workspace switches on purpose. */}
       {/* One decoder per video track, so tracks can be composited together. */}

@@ -5,21 +5,36 @@
  * track heads are sticky to the left, so scrolling down keeps the time ruler in
  * view and scrolling sideways keeps the track names in view — and the scroll
  * stays inside this box instead of moving the panels around it.
+ *
+ * Selection behaves the way an NLE's does: click one clip, ctrl/shift-click to
+ * add, drag a box across empty lane to sweep several, and every edit acts on
+ * the whole selection.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Copy,
   Eye,
   EyeOff,
   Lock,
   LockOpen,
   Music2,
   Plus,
+  Scissors,
+  SkipBack,
   Trash2,
   Type,
   Video as VideoIcon,
   Volume2,
   VolumeX,
 } from "lucide-react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Editor } from "./useEditor";
 import {
   Clip,
@@ -38,26 +53,43 @@ import {
 
 const TICKS = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
 export const HEAD_WIDTH = 168;
+/** Pointer travel before an empty-lane press turns into a selection box. */
+const SWEEP_SLOP = 5;
 
 type Drag = {
   clip: Clip;
+  /** Every clip moving with this one, captured at press time. */
+  group: Clip[];
   mode: "move" | "trim-start" | "trim-end";
   originX: number;
+};
+
+type Sweep = {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  live: boolean;
 };
 
 export default function Timeline({
   editor,
   zoom,
+  snapBeats = true,
 }: {
   editor: Editor;
   zoom: number;
+  snapBeats?: boolean;
 }) {
   const {
     project,
     time,
     seek,
-    selectedId,
+    selectedIds,
     setSelectedId,
+    toggleSelectId,
+    selectMany,
+    clearSelection,
     commit,
     duration,
     patchTrack,
@@ -67,6 +99,10 @@ export default function Timeline({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
+  /** Whether the current press has actually moved anything yet. */
+  const dragMoved = useRef(false);
+  const [sweep, setSweep] = useState<Sweep | null>(null);
+  const sweepRef = useRef<Sweep | null>(null);
   const snapshot = useRef(project);
   const liveTime = useRef(time);
   snapshot.current = project;
@@ -78,6 +114,12 @@ export default function Timeline({
     TICKS.find(value => value * zoom >= 74) ?? TICKS[TICKS.length - 1];
   const ticks: number[] = [];
   for (let at = 0; at <= span; at += step) ticks.push(at);
+  // Beat lines get dense fast. Past a certain count they read as a grey wash,
+  // so they are thinned rather than drawn on top of one another.
+  const gridStride = Math.max(
+    1,
+    Math.ceil(project.markers.length / Math.max(40, laneWidth / 12))
+  );
 
   const timeFromEvent = useCallback(
     (clientX: number) => {
@@ -99,10 +141,33 @@ export default function Timeline({
   ) => {
     const track = project.tracks.find(item => item.id === clip.trackId);
     if (track?.locked) return;
+    if (event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
-    setSelectedId(clip.id);
-    setDrag({ clip, mode, originX: event.clientX });
+
+    // An additive click picks; it does not start a drag.
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      toggleSelectId(clip.id);
+      return;
+    }
+
+    // Dragging a clip that is already part of a selection moves the whole
+    // selection; dragging any other clip narrows the selection to it first.
+    const inSelection = selectedIds.includes(clip.id);
+    const ids = inSelection ? selectedIds : [clip.id];
+    if (!inSelection) setSelectedId(clip.id);
+
+    const locked = new Set(
+      project.tracks.filter(item => item.locked).map(item => item.id)
+    );
+    const group =
+      mode === "move"
+        ? project.clips.filter(
+            item => ids.includes(item.id) && !locked.has(item.trackId)
+          )
+        : [clip];
+    dragMoved.current = false;
+    setDrag({ clip, group, mode, originX: event.clientX });
   };
 
   useEffect(() => {
@@ -110,31 +175,55 @@ export default function Timeline({
 
     const onMove = (event: PointerEvent) => {
       const raw = (event.clientX - drag.originX) / zoom;
+      if (Math.abs(event.clientX - drag.originX) > 2) dragMoved.current = true;
       const source = drag.clip;
-      const points = snapPoints(snapshot.current, source.id, liveTime.current);
+      const points = snapPoints(
+        snapshot.current,
+        drag.group.map(item => item.id),
+        liveTime.current,
+        snapBeats
+      );
       const tolerance = SNAP_SECONDS * (60 / zoom) * 2;
 
       if (drag.mode === "move") {
-        const at = Math.max(0, snap(source.at + raw, points, tolerance));
-        // Dragging onto another row of the same kind moves the clip there.
-        // That is how an overlay ends up on its own video track for PIP.
-        const sourceKind = snapshot.current.tracks.find(
-          item => item.id === source.trackId
-        )?.kind;
-        const row = document
-          .elementsFromPoint(event.clientX, event.clientY)
-          .find(
-            node =>
-              node instanceof HTMLElement &&
-              !!node.dataset.track &&
-              node.dataset.kind === sourceKind
-          ) as HTMLElement | undefined;
-        const trackId = row?.dataset.track ?? source.trackId;
+        const wanted = Math.max(0, snap(source.at + raw, points, tolerance));
+        // The snapped move of the clip under the cursor is applied to every
+        // clip in the group, so their spacing survives the drag intact.
+        let shift = wanted - source.at;
+        const floor = drag.group.reduce(
+          (least, item) => Math.min(least, item.at),
+          Infinity
+        );
+        if (floor + shift < 0) shift = -floor;
+
+        // A single clip can also change lane; a group stays on its rows,
+        // because there is no one row to drop several clips onto.
+        let trackId = source.trackId;
+        if (drag.group.length === 1) {
+          const sourceKind = snapshot.current.tracks.find(
+            item => item.id === source.trackId
+          )?.kind;
+          const row = document
+            .elementsFromPoint(event.clientX, event.clientY)
+            .find(
+              node =>
+                node instanceof HTMLElement &&
+                !!node.dataset.track &&
+                node.dataset.kind === sourceKind
+            ) as HTMLElement | undefined;
+          trackId = row?.dataset.track ?? source.trackId;
+        }
+
+        const moves = new Map(
+          drag.group.map(item => [item.id, Math.max(0, item.at + shift)])
+        );
         commit(current => ({
           ...current,
-          clips: current.clips.map(clip =>
-            clip.id === source.id ? { ...clip, at, trackId } : clip
-          ),
+          clips: current.clips.map(clip => {
+            const at = moves.get(clip.id);
+            if (at === undefined) return clip;
+            return clip.id === source.id ? { ...clip, at, trackId } : { ...clip, at };
+          }),
         }));
         return;
       }
@@ -178,7 +267,14 @@ export default function Timeline({
       }
     };
 
-    const onUp = () => setDrag(null);
+    const onUp = () => {
+      // A press on an already-selected clip that never travelled is a plain
+      // click: narrow the selection to it, the way an NLE does on mouse-up.
+      if (!dragMoved.current && drag.group.length > 1) {
+        setSelectedId(drag.clip.id);
+      }
+      setDrag(null);
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
@@ -187,7 +283,97 @@ export default function Timeline({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [drag, zoom, commit]);
+  }, [drag, zoom, commit, snapBeats, setSelectedId]);
+
+  /** Box-select over empty lane. A press that never travels is still a seek. */
+  useEffect(() => {
+    if (!sweep) return;
+    const box = scrollRef.current;
+
+    // The live box is kept in a ref as well as in state. A state updater is
+    // allowed to compute the next box, but it must not reach out and set other
+    // components' state, so the selection is decided out here instead.
+    const onMove = (event: PointerEvent) => {
+      const current = sweepRef.current;
+      if (!current) return;
+      const travelled =
+        Math.abs(event.clientX - current.fromX) > SWEEP_SLOP ||
+        Math.abs(event.clientY - current.fromY) > SWEEP_SLOP;
+      const next = {
+        ...current,
+        toX: event.clientX,
+        toY: event.clientY,
+        live: current.live || travelled,
+      };
+      sweepRef.current = next;
+      setSweep(next);
+    };
+
+    const onUp = (event: PointerEvent) => {
+      const current = sweepRef.current;
+      sweepRef.current = null;
+      setSweep(null);
+      if (!current) return;
+
+      if (!current.live) {
+        clearSelection();
+        seek(timeFromEvent(event.clientX));
+        return;
+      }
+      if (!box) return;
+
+      // Turn the screen rectangle into a time range plus a set of rows.
+      const rect = box.getBoundingClientRect();
+      const toTime = (clientX: number) =>
+        Math.max(0, (clientX - rect.left + box.scrollLeft - HEAD_WIDTH) / zoom);
+      const from = Math.min(toTime(current.fromX), toTime(event.clientX));
+      const to = Math.max(toTime(current.fromX), toTime(event.clientX));
+      const top = Math.min(current.fromY, event.clientY);
+      const bottom = Math.max(current.fromY, event.clientY);
+      const rows = Array.from(box.querySelectorAll<HTMLElement>("[data-track]"))
+        .filter(node => {
+          const lane = node.getBoundingClientRect();
+          return lane.bottom >= top && lane.top <= bottom;
+        })
+        .map(node => node.dataset.track!);
+
+      const locked = new Set(
+        snapshot.current.tracks
+          .filter(track => track.locked)
+          .map(track => track.id)
+      );
+      const hits = snapshot.current.clips
+        .filter(
+          clip =>
+            rows.includes(clip.trackId) &&
+            !locked.has(clip.trackId) &&
+            clipEnd(clip) > from &&
+            clip.at < to
+        )
+        .map(clip => clip.id);
+      selectMany(hits);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [sweep, zoom, seek, timeFromEvent, selectMany, clearSelection]);
+
+  const sweepBox = (() => {
+    if (!sweep?.live || !scrollRef.current) return null;
+    const rect = scrollRef.current.getBoundingClientRect();
+    return {
+      left: Math.min(sweep.fromX, sweep.toX) - rect.left,
+      top: Math.min(sweep.fromY, sweep.toY) - rect.top,
+      width: Math.abs(sweep.toX - sweep.fromX),
+      height: Math.abs(sweep.toY - sweep.fromY),
+    };
+  })();
 
   return (
     <div
@@ -197,8 +383,22 @@ export default function Timeline({
         const target = event.target as HTMLElement;
         if (target.closest(".clip") || target.closest(".track-head")) return;
         if (target.closest(".add-row")) return;
-        setSelectedId(null);
-        seek(timeFromEvent(event.clientX));
+        if (event.button !== 0) return;
+        // The ruler is for scrubbing; the lanes are for sweeping a selection.
+        if (target.closest(".ruler-row")) {
+          clearSelection();
+          seek(timeFromEvent(event.clientX));
+          return;
+        }
+        const started: Sweep = {
+          fromX: event.clientX,
+          fromY: event.clientY,
+          toX: event.clientX,
+          toY: event.clientY,
+          live: false,
+        };
+        sweepRef.current = started;
+        setSweep(started);
       }}
     >
       <div className="timeline-grid" style={{ width: HEAD_WIDTH + laneWidth }}>
@@ -217,6 +417,20 @@ export default function Timeline({
             ))}
           </div>
         </div>
+
+        {project.markers.length > 0 && (
+          <div
+            className="beat-grid"
+            style={{ left: HEAD_WIDTH, width: laneWidth }}
+            aria-hidden="true"
+          >
+            {project.markers
+              .filter((_, index) => index % gridStride === 0)
+              .map(at => (
+                <i key={at} style={{ left: at * zoom }} />
+              ))}
+          </div>
+        )}
 
         {project.tracks.map(track => (
           <div
@@ -242,7 +456,7 @@ export default function Timeline({
                   track={track}
                   zoom={zoom}
                   editor={editor}
-                  selected={clip.id === selectedId}
+                  selected={selectedIds.includes(clip.id)}
                   onDrag={startDrag}
                 />
               ))}
@@ -278,6 +492,19 @@ export default function Timeline({
           <b />
         </div>
       </div>
+
+      {sweepBox && (
+        <div
+          className="sweep-box"
+          style={{
+            left: sweepBox.left,
+            top: sweepBox.top,
+            width: sweepBox.width,
+            height: sweepBox.height,
+          }}
+          aria-hidden="true"
+        />
+      )}
     </div>
   );
 }
@@ -373,53 +600,122 @@ function ClipBox({
 }) {
   const asset = editor.assetFor(clip);
   const width = Math.max(12, clipLength(clip) * zoom);
-  const label = clip.text
-    ? clip.text.content.split("\n")[0]
-    : (asset?.name ?? "클립");
+  const label = clip.viz
+    ? "파형 효과"
+    : clip.text
+      ? clip.text.content.split("\n")[0]
+      : (asset?.name ?? "클립");
+  /** Right-click acts on the whole selection when this clip is part of it. */
+  const targets = selected ? editor.selectedIds : [clip.id];
 
   return (
-    <div
-      className={`clip kind-${track.kind} ${selected ? "is-selected" : ""}`}
-      style={{ left: clip.at * zoom, width }}
-      onPointerDown={event => onDrag(event, clip, "move")}
-      role="button"
-      tabIndex={0}
-      aria-label={`${label} 클립`}
-      onKeyDown={event => {
-        if (event.key === "Enter" || event.key === " ")
-          editor.setSelectedId(clip.id);
-      }}
-    >
-      {track.kind === "video" && (
-        <Filmstrip frames={asset?.frames ?? []} width={width} />
-      )}
-      {track.kind === "audio" && (
-        <Waveform
-          peaks={asset?.peaks ?? []}
-          duration={asset?.duration ?? 1}
-          from={clip.start}
-          to={clip.end}
-        />
-      )}
-      <span className="clip-label">
-        {track.kind === "text" && <Type size={10} />}
-        {label}
-      </span>
-      {clip.speed !== 1 && <span className="clip-badge">{clip.speed}x</span>}
-      {track.kind === "audio" && clip.volume !== 1 && (
-        <span className="clip-badge">{Math.round(clip.volume * 100)}%</span>
-      )}
-      <span
-        className="clip-grip left"
-        onPointerDown={event => onDrag(event, clip, "trim-start")}
-        aria-hidden="true"
-      />
-      <span
-        className="clip-grip right"
-        onPointerDown={event => onDrag(event, clip, "trim-end")}
-        aria-hidden="true"
-      />
-    </div>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          className={`clip kind-${track.kind} ${selected ? "is-selected" : ""}`}
+          style={{ left: clip.at * zoom, width }}
+          onPointerDown={event => onDrag(event, clip, "move")}
+          onContextMenu={() => {
+            if (!selected) editor.setSelectedId(clip.id);
+          }}
+          role="button"
+          tabIndex={0}
+          aria-label={`${label} 클립`}
+          aria-pressed={selected}
+          onKeyDown={event => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              editor.setSelectedId(clip.id);
+            }
+          }}
+        >
+          {track.kind === "video" && (
+            <Filmstrip frames={asset?.frames ?? []} width={width} />
+          )}
+          {track.kind === "audio" && (
+            <Waveform
+              peaks={asset?.peaks ?? []}
+              duration={asset?.duration ?? 1}
+              from={clip.start}
+              to={clip.end}
+            />
+          )}
+          <span className="clip-label">
+            {track.kind === "text" && <Type size={10} />}
+            {label}
+          </span>
+          {clip.speed !== 1 && <span className="clip-badge">{clip.speed}x</span>}
+          {track.kind === "audio" && clip.volume !== 1 && (
+            <span className="clip-badge">{Math.round(clip.volume * 100)}%</span>
+          )}
+          {clip.text?.beat && clip.text.beat.react !== "none" && (
+            <span className="clip-badge is-beat">비트</span>
+          )}
+          <span
+            className="clip-grip left"
+            onPointerDown={event => onDrag(event, clip, "trim-start")}
+            aria-hidden="true"
+          />
+          <span
+            className="clip-grip right"
+            onPointerDown={event => onDrag(event, clip, "trim-end")}
+            aria-hidden="true"
+          />
+        </div>
+      </ContextMenuTrigger>
+
+      <ContextMenuContent className="w-60">
+        <ContextMenuItem onSelect={() => editor.splitAtPlayhead()}>
+          <Scissors size={13} /> 재생 위치에서 나누기
+          <ContextMenuShortcut>S</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => editor.seek(clip.at)}>
+          <SkipBack size={13} /> 클립 처음으로 이동
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => editor.copyClips(targets)}>
+          <Copy size={13} /> 복사
+          <ContextMenuShortcut>Ctrl+C</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => editor.cutClips(targets)}>
+          잘라내기
+          <ContextMenuShortcut>Ctrl+X</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => editor.pasteClips()}>
+          재생 위치에 붙여넣기
+          <ContextMenuShortcut>Ctrl+V</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => editor.duplicateClips(targets)}>
+          <Copy size={13} /> 복제
+          <ContextMenuShortcut>Ctrl+D</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => editor.addMarker(clip.at)}>
+          이 클립 앞에 마커 찍기
+          <ContextMenuShortcut>M</ContextMenuShortcut>
+        </ContextMenuItem>
+        {track.kind !== "text" && (
+          <ContextMenuItem onSelect={() => editor.markBeats(clip.id)}>
+            이 클립에서 비트 찾기
+          </ContextMenuItem>
+        )}
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          variant="destructive"
+          onSelect={() => editor.removeClips(targets)}
+        >
+          <Trash2 size={13} /> 삭제
+          <ContextMenuShortcut>Delete</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem
+          variant="destructive"
+          onSelect={() => editor.rippleDelete(targets)}
+        >
+          <Trash2 size={13} /> 삭제하고 뒤 당기기
+          <ContextMenuShortcut>Shift+Del</ContextMenuShortcut>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

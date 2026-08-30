@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Asset,
   AudioFx,
+  BeatStyle,
   Clip,
   Color,
   Cue,
@@ -25,14 +26,19 @@ import {
   TrackKind,
   Transform,
   Transition,
+  VizStyle,
   appendAt,
   assetOf,
   audibleClips,
+  beatGrid,
   clipEnd,
   clipLength,
   clipsOn,
   covers,
+  defaultBeat,
   defaultText,
+  defaultViz,
+  detectBpm,
   extractFrames,
   extractPeaks,
   fadeGain,
@@ -84,7 +90,9 @@ export function useEditor() {
   const [project, setProject] = useState<Project>(newProject);
   const [past, setPast] = useState<Project[]>([]);
   const [future, setFuture] = useState<Project[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // A list, not one id: real timelines let you grab a handful of clips and act
+  // on all of them. The last entry is the "primary" one the inspector edits.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [importing, setImporting] = useState(0);
@@ -98,6 +106,12 @@ export function useEditor() {
   const audioCtx = useRef<AudioContext | null>(null);
   const transportSig = useRef("");
   const fxNodes = useRef(new Map<string, FxNodes>());
+  /** Cut/copied clips, held with the time of the earliest one so a paste keeps
+   * the spacing between them. */
+  const clipboard = useRef<{ clips: Clip[]; origin: number }>({
+    clips: [],
+    origin: 0,
+  });
 
   // While the frame loop is running it owns timeRef; letting a render write the
   // throttled state value back would drag the clock backwards every render.
@@ -105,7 +119,64 @@ export function useEditor() {
   projectRef.current = project;
 
   const duration = useMemo(() => projectDuration(project), [project]);
+  const bpm = useMemo(() => detectBpm(project.markers), [project.markers]);
+  const selectedId = selectedIds.length
+    ? selectedIds[selectedIds.length - 1]
+    : null;
   const selected = project.clips.find(clip => clip.id === selectedId) ?? null;
+  const selectedClips = useMemo(
+    () => project.clips.filter(clip => selectedIds.includes(clip.id)),
+    [project.clips, selectedIds]
+  );
+
+  // ---------------------------------------------------------------- selection
+
+  const setSelectedId = useCallback(
+    (id: string | null) => setSelectedIds(id ? [id] : []),
+    []
+  );
+
+  /** Ctrl/Cmd-click: add to the selection, or drop it if it was already in. */
+  const toggleSelectId = useCallback((id: string) => {
+    setSelectedIds(current =>
+      current.includes(id)
+        ? current.filter(item => item !== id)
+        : [...current, id]
+    );
+  }, []);
+
+  const selectMany = useCallback(
+    (ids: string[]) => setSelectedIds(Array.from(new Set(ids))),
+    []
+  );
+
+  const clearSelection = useCallback(() => setSelectedIds([]), []);
+
+  const selectAll = useCallback(() => {
+    const current = projectRef.current;
+    const locked = new Set(
+      current.tracks.filter(track => track.locked).map(track => track.id)
+    );
+    setSelectedIds(
+      current.clips
+        .filter(clip => !locked.has(clip.trackId))
+        .map(clip => clip.id)
+    );
+  }, []);
+
+  /** Everything the playhead is sitting on, across every unlocked track. */
+  const selectUnderPlayhead = useCallback(() => {
+    const current = projectRef.current;
+    const at = timeRef.current;
+    const locked = new Set(
+      current.tracks.filter(track => track.locked).map(track => track.id)
+    );
+    const hits = current.clips
+      .filter(clip => covers(clip, at) && !locked.has(clip.trackId))
+      .map(clip => clip.id);
+    setSelectedIds(hits);
+    return hits.length;
+  }, []);
 
   useEffect(() => {
     for (const asset of project.assets) {
@@ -517,6 +588,187 @@ export function useEditor() {
     return cuts;
   }, [commit]);
 
+  const addMarker = useCallback(
+    (at = timeRef.current) => {
+      const stamp = Number(Math.max(0, at).toFixed(3));
+      commit(current =>
+        current.markers.some(item => Math.abs(item - stamp) < 0.02)
+          ? current
+          : {
+              ...current,
+              markers: [...current.markers, stamp].sort((a, b) => a - b),
+            }
+      );
+      return stamp;
+    },
+    [commit]
+  );
+
+  const clearMarkers = useCallback(
+    () => commit(current => ({ ...current, markers: [] })),
+    [commit]
+  );
+
+  /** Replace the marks with an even click track — a grid to cut and snap to. */
+  const applyBeatGrid = useCallback(
+    (bpm: number, offset = 0) => {
+      const current = projectRef.current;
+      const span = Math.max(projectDuration(current), 30);
+      const grid = beatGrid(bpm, Math.max(0, offset), span);
+      if (grid.length === 0) return 0;
+      commit(value => ({ ...value, markers: grid }));
+      return grid.length;
+    },
+    [commit]
+  );
+
+  /**
+   * One caption per beat. Give it the lines and they land on consecutive
+   * markers, each holding until the next one — a lyric video in one press.
+   */
+  const addCaptionsOnBeats = useCallback(
+    (lines: string[], style: Partial<TextStyle> = {}, everyNth = 1) => {
+      const current = projectRef.current;
+      const words = lines.map(line => line.trim()).filter(Boolean);
+      if (words.length === 0) return 0;
+      const beats = current.markers.filter(
+        (_, index) => index % Math.max(1, everyNth) === 0
+      );
+      if (beats.length < 2) return 0;
+
+      const ids = words.map(() => makeId("clip"));
+      const fallbackTrack = makeId("text");
+      commit(value => {
+        let tracks = value.tracks;
+        let track = tracksOfKind(value, "text")[0];
+        if (!track) {
+          track = {
+            id: fallbackTrack,
+            kind: "text",
+            name: "자막 1",
+            muted: false,
+            locked: false,
+          };
+          tracks = [track, ...tracks];
+        }
+        const made = words.map((content, index) => {
+          const at = beats[Math.min(index, beats.length - 1)];
+          const next = beats[Math.min(index + 1, beats.length - 1)];
+          const hold = Math.max(MIN_CLIP, next > at ? next - at : TEXT_HOLD);
+          return {
+            ...makeClip({ trackId: track!.id, at, end: hold }),
+            id: ids[index],
+            text: { ...defaultText(content), ...style },
+          };
+        });
+        return { ...value, tracks, clips: [...value.clips, ...made] };
+      });
+      setSelectedIds(ids);
+      return Math.min(words.length, beats.length);
+    },
+    [commit]
+  );
+
+  /** Put one caption's beat reaction on every other caption. */
+  const applyBeatToAll = useCallback(
+    (id: string) => {
+      const current = projectRef.current;
+      const source = current.clips.find(clip => clip.id === id)?.text;
+      if (!source) return 0;
+      const beat = source.beat ?? defaultBeat();
+      const touched = current.clips.filter(
+        clip => clip.text && clip.id !== id
+      ).length;
+      commit(value => ({
+        ...value,
+        clips: value.clips.map(clip =>
+          clip.text && clip.id !== id
+            ? {
+                ...clip,
+                text: {
+                  ...clip.text,
+                  beat: { ...beat },
+                  karaoke: source.karaoke,
+                  karaokeColor: source.karaokeColor,
+                },
+              }
+            : clip
+        ),
+      }));
+      return touched;
+    },
+    [commit]
+  );
+
+  /** Drop an on-screen waveform onto a text track at the playhead. */
+  const addViz = useCallback(
+    (patch: Partial<VizStyle> = {}, seconds = 6) => {
+      const created = makeId("clip");
+      const fallbackTrack = makeId("text");
+      commit(current => {
+        let tracks = current.tracks;
+        let track = tracksOfKind(current, "text")[0];
+        if (!track) {
+          track = {
+            id: fallbackTrack,
+            kind: "text",
+            name: "자막 1",
+            muted: false,
+            locked: false,
+          };
+          tracks = [track, ...tracks];
+        }
+        const clip: Clip = {
+          ...makeClip({
+            trackId: track.id,
+            end: seconds,
+            at: Math.max(0, timeRef.current),
+          }),
+          id: created,
+          viz: { ...defaultViz(), ...patch },
+        };
+        return { ...current, tracks, clips: [...current.clips, clip] };
+      });
+      setSelectedIds([created]);
+      return created;
+    },
+    [commit]
+  );
+
+  const patchViz = useCallback(
+    (id: string, patch: Partial<VizStyle>) => {
+      commit(current => ({
+        ...current,
+        clips: current.clips.map(clip =>
+          clip.id === id && clip.viz
+            ? { ...clip, viz: { ...clip.viz, ...patch } }
+            : clip
+        ),
+      }));
+    },
+    [commit]
+  );
+
+  const patchBeat = useCallback(
+    (id: string, patch: Partial<BeatStyle>) => {
+      commit(current => ({
+        ...current,
+        clips: current.clips.map(clip =>
+          clip.id === id && clip.text
+            ? {
+                ...clip,
+                text: {
+                  ...clip.text,
+                  beat: { ...(clip.text.beat ?? defaultBeat()), ...patch },
+                },
+              }
+            : clip
+        ),
+      }));
+    },
+    [commit]
+  );
+
   /** Lift a clip so its loudest moment sits just under the ceiling. */
   const normalize = useCallback(
     (clipId: string, target = 0.89) => {
@@ -740,32 +992,186 @@ export function useEditor() {
     [commit]
   );
 
-  const removeClip = useCallback(
-    (id: string) => {
+  /** Ids that may actually be edited — a locked track protects its clips. */
+  const editableIds = useCallback((ids: string[]) => {
+    const current = projectRef.current;
+    const locked = new Set(
+      current.tracks.filter(track => track.locked).map(track => track.id)
+    );
+    return current.clips
+      .filter(clip => ids.includes(clip.id) && !locked.has(clip.trackId))
+      .map(clip => clip.id);
+  }, []);
+
+  const removeClips = useCallback(
+    (ids: string[]) => {
+      const targets = editableIds(ids);
+      if (targets.length === 0) return 0;
+      const gone = new Set(targets);
       commit(current => ({
         ...current,
-        clips: current.clips.filter(clip => clip.id !== id),
+        clips: current.clips.filter(clip => !gone.has(clip.id)),
       }));
-      setSelectedId(current => (current === id ? null : current));
+      setSelectedIds(current => current.filter(id => !gone.has(id)));
+      return targets.length;
     },
-    [commit]
+    [commit, editableIds]
+  );
+
+  const removeClip = useCallback(
+    (id: string) => {
+      removeClips([id]);
+    },
+    [removeClips]
+  );
+
+  /**
+   * Delete and close the hole behind it, per track. This is the cut people
+   * actually want most of the time: leaving a gap means dragging everything
+   * left by hand afterwards.
+   */
+  const rippleDelete = useCallback(
+    (ids: string[]) => {
+      const targets = editableIds(ids);
+      if (targets.length === 0) return 0;
+      const gone = new Set(targets);
+      commit(current => {
+        const doomed = current.clips.filter(clip => gone.has(clip.id));
+        let clips = current.clips.filter(clip => !gone.has(clip.id));
+        // Later clips first, so removing one gap does not move the next one's
+        // reference point out from under it.
+        const ordered = doomed.slice().sort((a, b) => clipEnd(b) - clipEnd(a));
+        for (const cut of ordered) {
+          const span = clipLength(cut);
+          const finish = clipEnd(cut);
+          clips = clips.map(clip =>
+            clip.trackId === cut.trackId && clip.at >= finish - 0.001
+              ? { ...clip, at: Math.max(0, clip.at - span) }
+              : clip
+          );
+        }
+        return { ...current, clips };
+      });
+      setSelectedIds(current => current.filter(id => !gone.has(id)));
+      return targets.length;
+    },
+    [commit, editableIds]
+  );
+
+  const duplicateClips = useCallback(
+    (ids: string[]) => {
+      const targets = editableIds(ids);
+      if (targets.length === 0) return 0;
+      const fresh = new Map(targets.map(id => [id, makeId("clip")]));
+      commit(current => {
+        const copies = current.clips
+          .filter(clip => fresh.has(clip.id))
+          .map(clip => ({
+            ...clip,
+            id: fresh.get(clip.id)!,
+            at: clipEnd(clip),
+          }));
+        return { ...current, clips: [...current.clips, ...copies] };
+      });
+      setSelectedIds(Array.from(fresh.values()));
+      return targets.length;
+    },
+    [commit, editableIds]
   );
 
   const duplicateClip = useCallback(
     (id: string) => {
-      const created = makeId("clip");
-      commit(current => {
-        const source = current.clips.find(clip => clip.id === id);
-        if (!source) return current;
+      duplicateClips([id]);
+    },
+    [duplicateClips]
+  );
+
+  // ---------------------------------------------------------------- clipboard
+
+  const copyClips = useCallback((ids: string[]) => {
+    const current = projectRef.current;
+    const picked = current.clips.filter(clip => ids.includes(clip.id));
+    if (picked.length === 0) return 0;
+    clipboard.current = {
+      clips: picked.map(clip => ({ ...clip })),
+      origin: picked.reduce((first, clip) => Math.min(first, clip.at), Infinity),
+    };
+    return picked.length;
+  }, []);
+
+  const cutClips = useCallback(
+    (ids: string[]) => {
+      const copied = copyClips(ids);
+      if (copied === 0) return 0;
+      rippleDelete(ids);
+      return copied;
+    },
+    [copyClips, rippleDelete]
+  );
+
+  /** Paste at the playhead, keeping the gaps the copied clips had between them. */
+  const pasteClips = useCallback(() => {
+    const held = clipboard.current;
+    if (held.clips.length === 0) return 0;
+    const at = timeRef.current;
+    const ids = held.clips.map(() => makeId("clip"));
+    commit(current => {
+      const live = new Set(current.tracks.map(track => track.id));
+      const fallback = (kind: TrackKind) => tracksOfKind(current, kind)[0]?.id;
+      const clips = held.clips.map((clip, index) => {
+        const trackId = live.has(clip.trackId)
+          ? clip.trackId
+          : (fallback(clip.text || clip.viz ? "text" : "video") ??
+            current.tracks[0].id);
         return {
-          ...current,
-          clips: [
-            ...current.clips,
-            { ...source, id: created, at: clipEnd(source) },
-          ],
+          ...clip,
+          id: ids[index],
+          trackId,
+          at: Math.max(0, at + (clip.at - held.origin)),
         };
       });
-      setSelectedId(created);
+      return { ...current, clips: [...current.clips, ...clips] };
+    });
+    setSelectedIds(ids);
+    return ids.length;
+  }, [commit]);
+
+  /** Shift clips along the timeline — arrow keys, one frame or one second. */
+  const nudgeClips = useCallback(
+    (ids: string[], seconds: number) => {
+      const targets = new Set(editableIds(ids));
+      if (targets.size === 0) return 0;
+      commit(current => ({
+        ...current,
+        clips: current.clips.map(clip =>
+          targets.has(clip.id)
+            ? { ...clip, at: Math.max(0, clip.at + seconds) }
+            : clip
+        ),
+      }));
+      return targets.size;
+    },
+    [commit, editableIds]
+  );
+
+  /** Drop a source and everything cut from it. Frees the object URL too. */
+  const removeAsset = useCallback(
+    (assetId: string) => {
+      const current = projectRef.current;
+      const asset = current.assets.find(item => item.id === assetId);
+      if (!asset) return 0;
+      const used = current.clips.filter(clip => clip.assetId === assetId);
+      commit(value => ({
+        ...value,
+        assets: value.assets.filter(item => item.id !== assetId),
+        clips: value.clips.filter(clip => clip.assetId !== assetId),
+      }));
+      setSelectedIds(cur =>
+        cur.filter(id => !used.some(clip => clip.id === id))
+      );
+      images.current.delete(assetId);
+      if (asset.url.startsWith("blob:")) URL.revokeObjectURL(asset.url);
+      return used.length;
     },
     [commit]
   );
@@ -1104,9 +1510,17 @@ export function useEditor() {
   return {
     project,
     duration,
+    bpm,
     selected,
     selectedId,
+    selectedIds,
+    selectedClips,
     setSelectedId,
+    toggleSelectId,
+    selectMany,
+    selectAll,
+    selectUnderPlayhead,
+    clearSelection,
     time,
     timeRef,
     playing,
@@ -1137,11 +1551,28 @@ export function useEditor() {
     patchColor,
     patchTransition,
     patchFx,
+    patchViz,
+    patchBeat,
     removeClip,
+    removeClips,
+    rippleDelete,
     duplicateClip,
+    duplicateClips,
+    copyClips,
+    cutClips,
+    pasteClips,
+    nudgeClips,
+    removeAsset,
+    canPaste: () => clipboard.current.clips.length > 0,
     splitAtPlayhead,
     setFrameSize,
     setMarkers,
+    addMarker,
+    clearMarkers,
+    applyBeatGrid,
+    addCaptionsOnBeats,
+    applyBeatToAll,
+    addViz,
     cutSilence,
     markBeats,
     splitAtMarkers,
