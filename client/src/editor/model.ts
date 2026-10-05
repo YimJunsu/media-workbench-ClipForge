@@ -118,6 +118,231 @@ export const defaultViz = (): VizStyle => ({
   source: "",
 });
 
+/** Shapes and emoji that sit over the picture. They live on text tracks. */
+export type StickerKind =
+  | "emoji"
+  | "circle"
+  | "rect"
+  | "triangle"
+  | "star"
+  | "arrow"
+  | "heart"
+  | "bubble"
+  | "burst"
+  | "line"
+  | "ring"
+  | "frame";
+
+export const STICKER_SHAPES: { id: StickerKind; name: string }[] = [
+  { id: "circle", name: "원" },
+  { id: "ring", name: "링" },
+  { id: "rect", name: "사각형" },
+  { id: "frame", name: "테두리" },
+  { id: "triangle", name: "삼각형" },
+  { id: "star", name: "별" },
+  { id: "heart", name: "하트" },
+  { id: "arrow", name: "화살표" },
+  { id: "bubble", name: "말풍선" },
+  { id: "burst", name: "폭발" },
+  { id: "line", name: "선" },
+];
+
+export const STICKER_EMOJI = [
+  "🔥",
+  "✨",
+  "💡",
+  "❤️",
+  "😂",
+  "😮",
+  "👍",
+  "👀",
+  "🎯",
+  "⚡",
+  "💥",
+  "🎉",
+  "📌",
+  "⭐",
+  "💬",
+  "🚀",
+  "🏆",
+  "🔔",
+  "❗",
+  "❓",
+];
+
+export type Sticker = {
+  kind: StickerKind;
+  /** Only read when kind is "emoji". */
+  glyph: string;
+  color: string;
+  stroke: string;
+  strokeWidth: number;
+  filled: boolean;
+  opacity: number;
+  /** Centre and size as fractions of the frame. */
+  x: number;
+  y: number;
+  size: number;
+  rotate: number;
+  /** Stickers answer the music with the same machinery captions use. */
+  beat: BeatStyle;
+};
+
+export const defaultSticker = (patch: Partial<Sticker> = {}): Sticker => ({
+  kind: "circle",
+  glyph: "🔥",
+  color: "#e8952e",
+  stroke: "#ffffff",
+  strokeWidth: 0,
+  filled: true,
+  opacity: 1,
+  x: 0.5,
+  y: 0.5,
+  size: 0.22,
+  rotate: 0,
+  beat: defaultBeat(),
+  ...patch,
+});
+
+/** Ready-made caption looks, the way a template picker offers them. */
+export const TEXT_TEMPLATES: {
+  id: string;
+  name: string;
+  hint: string;
+  style: Partial<TextStyle>;
+}[] = [
+  {
+    id: "plain",
+    name: "기본 자막",
+    hint: "아래 가운데, 검은 상자",
+    style: { size: 56, y: 0.84, back: "box", color: "#ffffff" },
+  },
+  {
+    id: "title",
+    name: "큰 제목",
+    hint: "화면 한가운데, 외곽선",
+    style: {
+      size: 104,
+      y: 0.5,
+      back: "outline",
+      color: "#ffffff",
+      weight: 800,
+    },
+  },
+  {
+    id: "pop",
+    name: "비트 팝",
+    hint: "비트마다 튀어오릅니다",
+    style: {
+      size: 76,
+      y: 0.78,
+      back: "outline",
+      color: "#ffffff",
+      weight: 800,
+      beat: {
+        react: "pop",
+        drive: "beat",
+        amount: 0.7,
+        decay: 0.22,
+        color: "#e8952e",
+      },
+    },
+  },
+  {
+    id: "neon",
+    name: "네온",
+    hint: "비트마다 빛이 번집니다",
+    style: {
+      size: 82,
+      y: 0.5,
+      back: "shadow",
+      color: "#8ff6ff",
+      backColor: "#0bb8d4",
+      weight: 800,
+      beat: {
+        react: "glow",
+        drive: "beat",
+        amount: 0.9,
+        decay: 0.3,
+        color: "#28e0ff",
+      },
+    },
+  },
+  {
+    id: "karaoke",
+    name: "가사형",
+    hint: "단어가 차례로 켜집니다",
+    style: {
+      size: 68,
+      y: 0.8,
+      back: "outline",
+      color: "#ffffff",
+      weight: 700,
+      karaoke: true,
+      karaokeColor: "#ffd27a",
+    },
+  },
+  {
+    id: "typing",
+    name: "타이핑",
+    hint: "한 글자씩 찍힙니다",
+    style: {
+      size: 58,
+      y: 0.82,
+      back: "box",
+      color: "#9bffb0",
+      font: "mono",
+      anim: "type",
+    },
+  },
+  {
+    id: "shout",
+    name: "외침",
+    hint: "굵은 고딕, 비트마다 흔들림",
+    style: {
+      size: 96,
+      y: 0.42,
+      back: "outline",
+      color: "#ffe14d",
+      font: "impact",
+      weight: 900,
+      beat: {
+        react: "shake",
+        drive: "beat",
+        amount: 0.8,
+        decay: 0.18,
+        color: "#ff5d3c",
+      },
+    },
+  },
+  {
+    id: "quote",
+    name: "인용",
+    hint: "명조, 그림자",
+    style: {
+      size: 62,
+      y: 0.46,
+      back: "shadow",
+      color: "#f4ecdf",
+      font: "serif",
+      weight: 500,
+    },
+  },
+  {
+    id: "handwrite",
+    name: "손글씨",
+    hint: "가볍게 떠오릅니다",
+    style: {
+      size: 88,
+      y: 0.76,
+      back: "shadow",
+      color: "#ffffff",
+      font: "hand",
+      anim: "rise",
+    },
+  },
+];
+
 export const FONTS: { id: CaptionFont; name: string; stack: string }[] = [
   {
     id: "sans",
@@ -176,6 +401,9 @@ export type Transform = {
   y: number;
   opacity: number;
   fit: "contain" | "cover";
+  /** Mirror the picture. Flipping a talking head is an everyday edit. */
+  flipX: boolean;
+  flipY: boolean;
 };
 
 export type Color = {
@@ -183,9 +411,186 @@ export type Color = {
   contrast: number;
   saturate: number;
   hue: number;
+  sepia: number;
+  grayscale: number;
+  /** Pixels of blur at the project's frame size. */
+  blur: number;
+  /** A colour washed over the picture, which is what gives a look its mood. */
+  tint: string;
+  tintAmount: number;
+  tintBlend: "overlay" | "soft-light" | "screen" | "multiply" | "color";
 };
 
-export type TransitionKind = "none" | "dissolve" | "fade";
+/** Named looks. Each one is just a Color, so they stack with manual tweaks. */
+export type FilterPreset = { id: string; name: string; color: Partial<Color> };
+
+export const FILTERS: FilterPreset[] = [
+  { id: "none", name: "없음", color: {} },
+  {
+    id: "crisp",
+    name: "선명",
+    color: { contrast: 1.16, saturate: 1.18, brightness: 1.03 },
+  },
+  {
+    id: "warm",
+    name: "따뜻",
+    color: {
+      tint: "#ff9a3c",
+      tintAmount: 0.18,
+      tintBlend: "soft-light",
+      saturate: 1.1,
+    },
+  },
+  {
+    id: "cool",
+    name: "차가움",
+    color: {
+      tint: "#3c9aff",
+      tintAmount: 0.2,
+      tintBlend: "soft-light",
+      contrast: 1.06,
+    },
+  },
+  {
+    id: "vintage",
+    name: "빈티지",
+    color: {
+      sepia: 0.42,
+      saturate: 0.82,
+      contrast: 0.94,
+      tint: "#d9a066",
+      tintAmount: 0.14,
+      tintBlend: "overlay",
+    },
+  },
+  { id: "mono", name: "흑백", color: { grayscale: 1, contrast: 1.12 } },
+  {
+    id: "noir",
+    name: "느와르",
+    color: { grayscale: 1, contrast: 1.4, brightness: 0.92 },
+  },
+  {
+    id: "film",
+    name: "필름",
+    color: {
+      contrast: 1.1,
+      saturate: 0.9,
+      tint: "#2b3a4a",
+      tintAmount: 0.16,
+      tintBlend: "soft-light",
+    },
+  },
+  {
+    id: "cinema",
+    name: "시네마",
+    color: {
+      contrast: 1.22,
+      saturate: 0.94,
+      tint: "#17a2b8",
+      tintAmount: 0.15,
+      tintBlend: "multiply",
+      brightness: 0.98,
+    },
+  },
+  {
+    id: "pastel",
+    name: "파스텔",
+    color: {
+      brightness: 1.1,
+      saturate: 0.78,
+      contrast: 0.9,
+      tint: "#ffd6e7",
+      tintAmount: 0.2,
+      tintBlend: "screen",
+    },
+  },
+  {
+    id: "neon",
+    name: "네온",
+    color: {
+      saturate: 1.65,
+      contrast: 1.18,
+      tint: "#8a2be2",
+      tintAmount: 0.16,
+      tintBlend: "color",
+    },
+  },
+  {
+    id: "faded",
+    name: "바랜",
+    color: {
+      contrast: 0.84,
+      saturate: 0.7,
+      brightness: 1.07,
+      tint: "#bfb5a0",
+      tintAmount: 0.18,
+      tintBlend: "screen",
+    },
+  },
+];
+
+/**
+ * A moving treatment on the picture, as opposed to a filter's fixed look.
+ * Anything marked `beat` is driven by the same pulse the captions use.
+ */
+export type EffectKind =
+  | "none"
+  | "shake"
+  | "glitch"
+  | "zoom-pulse"
+  | "rgb-split"
+  | "vignette"
+  | "flash"
+  | "scanlines"
+  | "spin";
+
+export const EFFECTS: { id: EffectKind; name: string; hint: string }[] = [
+  { id: "none", name: "없음", hint: "" },
+  { id: "shake", name: "흔들림", hint: "화면이 좌우로 떨립니다" },
+  { id: "zoom-pulse", name: "줌 펄스", hint: "비트마다 화면이 확 커집니다" },
+  { id: "glitch", name: "글리치", hint: "가로로 찢어진 조각이 어긋납니다" },
+  { id: "rgb-split", name: "색수차", hint: "빨강·파랑이 어긋나 번집니다" },
+  { id: "flash", name: "플래시", hint: "비트마다 화면이 번쩍입니다" },
+  { id: "vignette", name: "비네팅", hint: "가장자리가 어두워집니다" },
+  { id: "scanlines", name: "스캔라인", hint: "가로줄이 깔린 옛 화면" },
+  { id: "spin", name: "회전", hint: "화면이 천천히 돕니다" },
+];
+
+export type VideoEffect = {
+  kind: EffectKind;
+  amount: number;
+  /** Follow the beat marks instead of running steadily. */
+  beat: boolean;
+};
+
+export type TransitionKind =
+  | "none"
+  | "dissolve"
+  | "fade"
+  | "slide-left"
+  | "slide-right"
+  | "slide-up"
+  | "slide-down"
+  | "wipe-left"
+  | "wipe-right"
+  | "zoom"
+  | "spin"
+  | "blur";
+
+export const TRANSITIONS: { id: TransitionKind; name: string }[] = [
+  { id: "none", name: "없음" },
+  { id: "dissolve", name: "디졸브" },
+  { id: "fade", name: "페이드" },
+  { id: "slide-left", name: "왼쪽으로 밀기" },
+  { id: "slide-right", name: "오른쪽으로 밀기" },
+  { id: "slide-up", name: "위로 밀기" },
+  { id: "slide-down", name: "아래로 밀기" },
+  { id: "wipe-left", name: "왼쪽 와이프" },
+  { id: "wipe-right", name: "오른쪽 와이프" },
+  { id: "zoom", name: "줌" },
+  { id: "spin", name: "회전" },
+  { id: "blur", name: "블러" },
+];
 
 export type Transition = {
   in: TransitionKind;
@@ -194,7 +599,12 @@ export type Transition = {
 };
 
 export type MotionKind =
-  "none" | "zoom-in" | "zoom-out" | "pan-left" | "pan-right" | "punch";
+  | "none"
+  | "zoom-in"
+  | "zoom-out"
+  | "pan-left"
+  | "pan-right"
+  | "punch";
 
 export const MOTIONS: { id: MotionKind; name: string }[] = [
   { id: "none", name: "없음" },
@@ -207,9 +617,38 @@ export const MOTIONS: { id: MotionKind; name: string }[] = [
 
 export type Motion = { kind: MotionKind; amount: number };
 
-export type AudioFxKind = "none" | "echo" | "reverb" | "lowpass" | "highpass";
+export type AudioFxKind =
+  | "none"
+  | "echo"
+  | "reverb"
+  | "lowpass"
+  | "highpass"
+  | "robot"
+  | "telephone"
+  | "radio"
+  | "chorus"
+  | "distort"
+  | "denoise";
 
 export type AudioFx = { kind: AudioFxKind; amount: number };
+
+export const AUDIO_FX: {
+  id: AudioFxKind;
+  name: string;
+  group: "공간" | "음색" | "목소리" | "정리";
+}[] = [
+  { id: "none", name: "없음", group: "공간" },
+  { id: "echo", name: "에코", group: "공간" },
+  { id: "reverb", name: "공간감", group: "공간" },
+  { id: "chorus", name: "코러스", group: "공간" },
+  { id: "lowpass", name: "먹먹하게", group: "음색" },
+  { id: "highpass", name: "얇게", group: "음색" },
+  { id: "distort", name: "거칠게", group: "음색" },
+  { id: "robot", name: "로봇", group: "목소리" },
+  { id: "telephone", name: "전화기", group: "목소리" },
+  { id: "radio", name: "라디오", group: "목소리" },
+  { id: "denoise", name: "잡음 줄이기", group: "정리" },
+];
 
 export type Clip = {
   id: string;
@@ -218,6 +657,8 @@ export type Clip = {
   text?: TextStyle;
   /** An on-screen waveform instead of words. Text tracks carry these too. */
   viz?: VizStyle;
+  /** A shape or emoji over the picture. Also a text-track clip. */
+  sticker?: Sticker;
   /** In and out points inside the source, in source seconds. */
   start: number;
   end: number;
@@ -232,6 +673,8 @@ export type Clip = {
   transition: Transition;
   fx: AudioFx;
   motion: Motion;
+  /** A moving treatment on the picture: shake, glitch, zoom pulse and so on. */
+  effect: VideoEffect;
   /** Drop this clip's level while another track is loud. */
   duck: number;
 };
@@ -284,6 +727,8 @@ export const defaultTransform = (): Transform => ({
   y: 0,
   opacity: 1,
   fit: "contain",
+  flipX: false,
+  flipY: false,
 });
 
 export const defaultColor = (): Color => ({
@@ -291,6 +736,18 @@ export const defaultColor = (): Color => ({
   contrast: 1,
   saturate: 1,
   hue: 0,
+  sepia: 0,
+  grayscale: 0,
+  blur: 0,
+  tint: "#ffffff",
+  tintAmount: 0,
+  tintBlend: "soft-light",
+});
+
+export const defaultEffect = (): VideoEffect => ({
+  kind: "none",
+  amount: 0.5,
+  beat: true,
 });
 
 export const defaultTransition = (): Transition => ({
@@ -344,14 +801,28 @@ export function makeClip(base: Partial<Clip> & { trackId: string }): Clip {
     transition: defaultTransition(),
     fx: defaultFx(),
     motion: defaultMotion(),
+    effect: defaultEffect(),
     duck: 0,
     ...base,
   };
 }
 
-/** CSS filter string for a clip colour grade; canvas understands the same syntax. */
-export function colorFilter(color: Color) {
-  return `brightness(${color.brightness}) contrast(${color.contrast}) saturate(${color.saturate}) hue-rotate(${color.hue}deg)`;
+/**
+ * CSS filter string for a clip colour grade; canvas understands the same
+ * syntax. `blur` is given in frame-height units so a look survives a change of
+ * output size — a 2px blur on a 720p frame is a 4px blur on 1440p.
+ */
+export function colorFilter(color: Color, frameHeight = 720) {
+  const parts = [
+    `brightness(${color.brightness})`,
+    `contrast(${color.contrast})`,
+    `saturate(${color.saturate})`,
+    `hue-rotate(${color.hue}deg)`,
+  ];
+  if (color.sepia) parts.push(`sepia(${color.sepia})`);
+  if (color.grayscale) parts.push(`grayscale(${color.grayscale})`);
+  if (color.blur) parts.push(`blur(${(color.blur * frameHeight) / 720}px)`);
+  return parts.join(" ");
 }
 
 export function isGraded(color: Color) {
@@ -359,32 +830,129 @@ export function isGraded(color: Color) {
     color.brightness !== 1 ||
     color.contrast !== 1 ||
     color.saturate !== 1 ||
-    color.hue !== 0
+    color.hue !== 0 ||
+    !!color.sepia ||
+    !!color.grayscale ||
+    !!color.blur
   );
 }
 
-/** Opacity from the clip transitions at a given moment, 0..1. */
-export function transitionAlpha(clip: Clip, time: number) {
+export function isTinted(color: Color) {
+  return (color.tintAmount ?? 0) > 0.001;
+}
+
+/**
+ * What a transition is doing to a clip right now.
+ *
+ * The old version only knew about opacity, which is all a dissolve needs. A
+ * slide, a wipe or a spin is geometry, so the whole state is computed in one
+ * place and the renderer applies it — that way the monitor and the exporter
+ * cannot drift apart over how a transition looks.
+ */
+export type TransitionState = {
+  alpha: number;
+  /** Offset as a fraction of the frame. */
+  dx: number;
+  dy: number;
+  scale: number;
+  /** Degrees about the frame centre. */
+  spin: number;
+  /** Blur in pixels at a 720-high frame. */
+  blur: number;
+  /** The part of the frame the clip is allowed to paint, 0..1, or null. */
+  reveal: { x: number; y: number; w: number; h: number } | null;
+  /** Black covering the whole frame, which is what a fade really is. */
+  veil: number;
+};
+
+const restingTransition = (): TransitionState => ({
+  alpha: 1,
+  dx: 0,
+  dy: 0,
+  scale: 1,
+  spin: 0,
+  blur: 0,
+  reveal: null,
+  veil: 0,
+});
+
+/**
+ * `progress` is 1 when the clip is fully present and 0 at the far edge of the
+ * transition. `entering` flips the direction a slide or a spin travels.
+ */
+function applyTransition(
+  state: TransitionState,
+  kind: TransitionKind,
+  progress: number,
+  entering: boolean
+) {
+  const p = Math.max(0, Math.min(1, progress));
+  const away = 1 - p;
+  if (away <= 0 || kind === "none") return;
+  const way = entering ? 1 : -1;
+
+  switch (kind) {
+    case "dissolve":
+      state.alpha = Math.min(state.alpha, p);
+      break;
+    case "fade":
+      state.veil = Math.max(state.veil, away);
+      break;
+    case "slide-left":
+      state.dx += away * way;
+      break;
+    case "slide-right":
+      state.dx -= away * way;
+      break;
+    case "slide-up":
+      state.dy += away * way;
+      break;
+    case "slide-down":
+      state.dy -= away * way;
+      break;
+    case "wipe-right":
+      state.reveal = { x: 0, y: 0, w: p, h: 1 };
+      break;
+    case "wipe-left":
+      state.reveal = { x: 1 - p, y: 0, w: p, h: 1 };
+      break;
+    case "zoom":
+      state.scale *= 1 + away * 0.45;
+      state.alpha = Math.min(state.alpha, p);
+      break;
+    case "spin":
+      state.spin += away * 180 * way;
+      state.scale *= 1 - away * 0.35;
+      state.alpha = Math.min(state.alpha, p);
+      break;
+    case "blur":
+      state.blur = Math.max(state.blur, away * 18);
+      state.alpha = Math.min(state.alpha, Math.min(1, p * 1.6));
+      break;
+    default:
+      break;
+  }
+}
+
+export function transitionState(clip: Clip, time: number): TransitionState {
+  const state = restingTransition();
   const { in: into, out, duration } = clip.transition;
-  let alpha = 1;
-  if (into !== "none" && duration > 0) {
-    alpha = Math.min(alpha, (time - clip.at) / duration);
-  }
-  if (out !== "none" && duration > 0) {
-    alpha = Math.min(alpha, (clipEnd(clip) - time) / duration);
-  }
-  return Math.max(0, Math.min(1, alpha));
+  if (duration <= 0) return state;
+  applyTransition(state, into, (time - clip.at) / duration, true);
+  applyTransition(state, out, (clipEnd(clip) - time) / duration, false);
+  state.alpha = Math.max(0, Math.min(1, state.alpha));
+  state.veil = Math.max(0, Math.min(1, state.veil));
+  return state;
+}
+
+/** Opacity alone, for the callers that only need to know if a clip shows. */
+export function transitionAlpha(clip: Clip, time: number) {
+  return transitionState(clip, time).alpha;
 }
 
 /** True while a fade-to-black transition is covering the frame. */
 export function blackVeil(clip: Clip, time: number) {
-  const { in: into, out, duration } = clip.transition;
-  if (duration <= 0) return 0;
-  let veil = 0;
-  if (into === "fade") veil = Math.max(veil, 1 - (time - clip.at) / duration);
-  if (out === "fade")
-    veil = Math.max(veil, 1 - (clipEnd(clip) - time) / duration);
-  return Math.max(0, Math.min(1, veil));
+  return transitionState(clip, time).veil;
 }
 
 export const defaultText = (content: string): TextStyle => ({

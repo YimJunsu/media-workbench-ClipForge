@@ -27,6 +27,7 @@ import {
   visibleVideoLayers,
 } from "./model";
 import { FRAME_HEIGHT, FRAME_WIDTH, drawFrame } from "./render";
+import { buildFxChain } from "./audioFx";
 
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
@@ -49,60 +50,6 @@ async function decodeSource(url: string, context: BaseAudioContext) {
   const response = await fetch(url);
   const buffer = await context.decodeAudioData(await response.arrayBuffer());
   audioCache.set(url, buffer);
-  return buffer;
-}
-
-function attachFx(
-  context: BaseAudioContext,
-  input: AudioNode,
-  clip: Clip
-): AudioNode {
-  const { kind, amount } = clip.fx;
-  if (kind === "none") return input;
-
-  if (kind === "lowpass" || kind === "highpass") {
-    const filter = context.createBiquadFilter();
-    filter.type = kind;
-    filter.frequency.value =
-      kind === "lowpass" ? 320 + (1 - amount) * 9000 : 40 + amount * 2400;
-    input.connect(filter);
-    return filter;
-  }
-
-  const merge = context.createGain();
-  const dry = context.createGain();
-  const wet = context.createGain();
-  dry.gain.value = 1 - amount * 0.5;
-  wet.gain.value = amount;
-  input.connect(dry).connect(merge);
-
-  if (kind === "echo") {
-    const delay = context.createDelay(2);
-    delay.delayTime.value = 0.12 + amount * 0.38;
-    const feedback = context.createGain();
-    feedback.gain.value = Math.min(0.65, amount * 0.7);
-    input.connect(delay);
-    delay.connect(feedback).connect(delay);
-    delay.connect(wet).connect(merge);
-  } else {
-    const convolver = context.createConvolver();
-    convolver.buffer = impulse(context, 1.1 + amount * 1.8);
-    input.connect(convolver);
-    convolver.connect(wet).connect(merge);
-  }
-  return merge;
-}
-
-/** A cheap decaying-noise impulse response; good enough for a room tail. */
-export function impulse(context: BaseAudioContext, seconds: number) {
-  const length = Math.max(1, Math.floor(context.sampleRate * seconds));
-  const buffer = context.createBuffer(2, length, context.sampleRate);
-  for (let channel = 0; channel < 2; channel += 1) {
-    const data = buffer.getChannelData(channel);
-    for (let i = 0; i < length; i += 1) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2.6);
-    }
-  }
   return buffer;
 }
 
@@ -179,8 +126,9 @@ export async function renderMix(project: Project, duration: number) {
       }
     }
 
-    const tail = attachFx(offline, source, clip);
-    tail.connect(gain).connect(offline.destination);
+    const chain = buildFxChain(offline, source, clip.fx);
+    chain.tail.connect(gain).connect(offline.destination);
+    chain.start();
     source.start(clip.at, clip.start, clip.end - clip.start);
     scheduled += 1;
   }

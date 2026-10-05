@@ -222,7 +222,9 @@ export default function Timeline({
           clips: current.clips.map(clip => {
             const at = moves.get(clip.id);
             if (at === undefined) return clip;
-            return clip.id === source.id ? { ...clip, at, trackId } : { ...clip, at };
+            return clip.id === source.id
+              ? { ...clip, at, trackId }
+              : { ...clip, at };
           }),
         }));
         return;
@@ -644,7 +646,9 @@ function ClipBox({
             {track.kind === "text" && <Type size={10} />}
             {label}
           </span>
-          {clip.speed !== 1 && <span className="clip-badge">{clip.speed}x</span>}
+          {clip.speed !== 1 && (
+            <span className="clip-badge">{clip.speed}x</span>
+          )}
           {track.kind === "audio" && clip.volume !== 1 && (
             <span className="clip-badge">{Math.round(clip.volume * 100)}%</span>
           )}

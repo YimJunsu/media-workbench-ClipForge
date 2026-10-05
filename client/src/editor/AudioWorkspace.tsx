@@ -298,7 +298,8 @@ export default function AudioWorkspace({
             className="mini"
             onClick={() => {
               const gone = rippleDelete(selectedIds);
-              if (gone > 0) toast.success(`${gone}개를 지우고 뒤를 당겼습니다.`);
+              if (gone > 0)
+                toast.success(`${gone}개를 지우고 뒤를 당겼습니다.`);
             }}
             disabled={selectedIds.length === 0}
             title="Shift+Delete — 지운 자리를 남기지 않습니다"

@@ -26,7 +26,10 @@ import {
   TrackKind,
   Transform,
   Transition,
+  VideoEffect,
   VizStyle,
+  Sticker,
+  FILTERS,
   appendAt,
   assetOf,
   audibleClips,
@@ -36,6 +39,9 @@ import {
   clipsOn,
   covers,
   defaultBeat,
+  defaultColor,
+  defaultEffect,
+  defaultSticker,
   defaultText,
   defaultViz,
   detectBpm,
@@ -54,7 +60,8 @@ import {
   tracksOfKind,
   visibleVideo,
 } from "./model";
-import { impulse } from "./exportMp4";
+import { buildFxChain } from "./audioFx";
+import { Sfx, encodeWav, sfxFile } from "./sfx";
 
 const DRIFT = 0.28;
 /** How far a smoothly playing element may wander before we step in. */
@@ -83,6 +90,8 @@ export type Editor = ReturnType<typeof useEditor>;
 type FxNodes = {
   source: MediaElementAudioSourceNode;
   tail: AudioNode;
+  /** Shuts down any oscillator the chain started. */
+  stop: () => void;
   key: string;
 };
 
@@ -735,6 +744,209 @@ export function useEditor() {
     [commit]
   );
 
+  /** Drop a shape or emoji onto a text track at the playhead. */
+  const addSticker = useCallback(
+    (patch: Partial<Sticker> = {}, seconds = 3) => {
+      const created = makeId("clip");
+      const fallbackTrack = makeId("text");
+      commit(current => {
+        let tracks = current.tracks;
+        let track = tracksOfKind(current, "text")[0];
+        if (!track) {
+          track = {
+            id: fallbackTrack,
+            kind: "text",
+            name: "자막 1",
+            muted: false,
+            locked: false,
+          };
+          tracks = [track, ...tracks];
+        }
+        const clip: Clip = {
+          ...makeClip({
+            trackId: track.id,
+            end: seconds,
+            at: Math.max(0, timeRef.current),
+          }),
+          id: created,
+          sticker: defaultSticker(patch),
+        };
+        return { ...current, tracks, clips: [...current.clips, clip] };
+      });
+      setSelectedIds([created]);
+      return created;
+    },
+    [commit]
+  );
+
+  const patchSticker = useCallback(
+    (id: string, patch: Partial<Sticker>) => {
+      commit(current => ({
+        ...current,
+        clips: current.clips.map(clip =>
+          clip.id === id && clip.sticker
+            ? { ...clip, sticker: { ...clip.sticker, ...patch } }
+            : clip
+        ),
+      }));
+    },
+    [commit]
+  );
+
+  const patchEffect = useCallback(
+    (id: string, patch: Partial<VideoEffect>) => {
+      commit(current => ({
+        ...current,
+        clips: current.clips.map(clip =>
+          clip.id === id
+            ? {
+                ...clip,
+                effect: { ...(clip.effect ?? defaultEffect()), ...patch },
+              }
+            : clip
+        ),
+      }));
+    },
+    [commit]
+  );
+
+  /** A named look is just a colour grade, so it lands through patchColor. */
+  const applyFilter = useCallback(
+    (ids: string[], presetId: string) => {
+      const preset = FILTERS.find(item => item.id === presetId);
+      if (!preset) return 0;
+      const targets = new Set(ids);
+      if (targets.size === 0) return 0;
+      commit(current => ({
+        ...current,
+        clips: current.clips.map(clip =>
+          targets.has(clip.id)
+            ? { ...clip, color: { ...defaultColor(), ...preset.color } }
+            : clip
+        ),
+      }));
+      return targets.size;
+    },
+    [commit]
+  );
+
+  /**
+   * Put a decoded sound into the project as a normal asset. Effects, extracted
+   * audio and recordings all arrive this way, so each one gets a waveform and
+   * behaves like any other clip.
+   */
+  const addAudioBlob = useCallback(
+    async (name: string, blob: Blob, at = timeRef.current) => {
+      const url = URL.createObjectURL(blob);
+      const { duration: length, peaks, peak } = await extractPeaks(url);
+      const assetId = makeId("asset");
+      const clipId = makeId("clip");
+      const start = Math.max(0, at);
+      const span = length || 1;
+
+      commit(current => {
+        const asset: Asset = {
+          id: assetId,
+          name,
+          kind: "audio",
+          url,
+          duration: span,
+          frames: [],
+          peaks,
+          peak,
+        };
+        // Land on the first audio row that is free here; a sound effect
+        // dropped on top of the music would otherwise replace nothing and
+        // simply pile up invisibly.
+        let tracks = current.tracks;
+        const rows = tracksOfKind(current, "audio");
+        let track = rows.find(
+          row =>
+            !current.clips.some(
+              clip =>
+                clip.trackId === row.id &&
+                clipEnd(clip) > start + 0.01 &&
+                clip.at < start + span - 0.01
+            )
+        );
+        if (!track) {
+          track = {
+            id: makeId("audio"),
+            kind: "audio",
+            name: `오디오 ${rows.length + 1}`,
+            muted: false,
+            locked: false,
+          };
+          tracks = [...tracks, track];
+        }
+        const clip: Clip = {
+          ...makeClip({ trackId: track.id, assetId, end: span, at: start }),
+          id: clipId,
+        };
+        return {
+          ...current,
+          tracks,
+          assets: [...current.assets, asset],
+          clips: [...current.clips, clip],
+        };
+      });
+      setSelectedIds([clipId]);
+      return clipId;
+    },
+    [commit]
+  );
+
+  /** Synthesise a sound effect and drop it at the playhead. */
+  const addSfx = useCallback(
+    async (sfx: Sfx) => {
+      const file = await sfxFile(sfx);
+      return addAudioBlob(sfx.name, file);
+    },
+    [addAudioBlob]
+  );
+
+  /**
+   * Lift the soundtrack off a video clip into its own audio clip, so it can be
+   * trimmed, ducked and treated separately from the picture.
+   */
+  const extractAudio = useCallback(
+    async (clipId: string) => {
+      const current = projectRef.current;
+      const clip = current.clips.find(item => item.id === clipId);
+      const asset = clip ? assetOf(current, clip) : null;
+      if (!clip || !asset || asset.kind !== "video") return false;
+
+      const Ctx = window.AudioContext ?? (window as any).webkitAudioContext;
+      const context: AudioContext = new Ctx();
+      try {
+        const response = await fetch(asset.url);
+        const decoded = await context.decodeAudioData(
+          await response.arrayBuffer()
+        );
+        // Only the part the clip actually uses, so the new clip lines up.
+        const rate = decoded.sampleRate;
+        const from = Math.floor(clip.start * rate);
+        const to = Math.min(decoded.length, Math.ceil(clip.end * rate));
+        if (to <= from) return false;
+        const cut = context.createBuffer(
+          decoded.numberOfChannels,
+          to - from,
+          rate
+        );
+        for (let c = 0; c < decoded.numberOfChannels; c += 1) {
+          cut.copyToChannel(decoded.getChannelData(c).slice(from, to), c);
+        }
+        await addAudioBlob(`${asset.name} 소리`, encodeWav(cut), clip.at);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        void context.close();
+      }
+    },
+    [addAudioBlob]
+  );
+
   const patchViz = useCallback(
     (id: string, patch: Partial<VizStyle>) => {
       commit(current => ({
@@ -1094,7 +1306,10 @@ export function useEditor() {
     if (picked.length === 0) return 0;
     clipboard.current = {
       clips: picked.map(clip => ({ ...clip })),
-      origin: picked.reduce((first, clip) => Math.min(first, clip.at), Infinity),
+      origin: picked.reduce(
+        (first, clip) => Math.min(first, clip.at),
+        Infinity
+      ),
     };
     return picked.length;
   }, []);
@@ -1227,43 +1442,20 @@ export function useEditor() {
         return; // already routed; leave it be
       }
     }
+    existing?.stop();
     existing?.tail.disconnect();
     source.disconnect();
 
-    const { kind, amount } = clip.fx;
-    let tail: AudioNode = source;
-    if (kind === "lowpass" || kind === "highpass") {
-      const filter = context.createBiquadFilter();
-      filter.type = kind;
-      filter.frequency.value =
-        kind === "lowpass" ? 320 + (1 - amount) * 9000 : 40 + amount * 2400;
-      source.connect(filter);
-      tail = filter;
-    } else if (kind === "echo" || kind === "reverb") {
-      const merge = context.createGain();
-      const dry = context.createGain();
-      const wet = context.createGain();
-      dry.gain.value = 1 - amount * 0.5;
-      wet.gain.value = amount;
-      source.connect(dry).connect(merge);
-      if (kind === "echo") {
-        const delay = context.createDelay(2);
-        delay.delayTime.value = 0.12 + amount * 0.38;
-        const feedback = context.createGain();
-        feedback.gain.value = Math.min(0.65, amount * 0.7);
-        source.connect(delay);
-        delay.connect(feedback).connect(delay);
-        delay.connect(wet).connect(merge);
-      } else {
-        const convolver = context.createConvolver();
-        convolver.buffer = impulse(context, 1.1 + amount * 1.8);
-        source.connect(convolver);
-        convolver.connect(wet).connect(merge);
-      }
-      tail = merge;
-    }
-    tail.connect(context.destination);
-    fxNodes.current.set(clip.id, { source, tail, key });
+    // The same builder the exporter uses, so the preview is a true audition.
+    const chain = buildFxChain(context, source, clip.fx);
+    chain.tail.connect(context.destination);
+    chain.start();
+    fxNodes.current.set(clip.id, {
+      source,
+      tail: chain.tail,
+      stop: chain.stop,
+      key,
+    });
   }, []);
 
   // ----------------------------------------------------------------- playback
@@ -1553,6 +1745,13 @@ export function useEditor() {
     patchFx,
     patchViz,
     patchBeat,
+    patchEffect,
+    patchSticker,
+    addSticker,
+    addSfx,
+    addAudioBlob,
+    applyFilter,
+    extractAudio,
     removeClip,
     removeClips,
     rippleDelete,
